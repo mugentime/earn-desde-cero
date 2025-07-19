@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -10,7 +11,6 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('dist')); // Serve frontend build
 
 // Binance API Configuration
 const BINANCE_BASE_URL = 'https://api.binance.com';
@@ -19,6 +19,9 @@ const SECRET_KEY = process.env.BINANCE_SECRET_KEY;
 
 // Generate signature for Binance API
 const generateSignature = (queryString) => {
+  if (!SECRET_KEY) {
+    throw new Error('SECRET_KEY is not configured');
+  }
   return crypto
     .createHmac('sha256', SECRET_KEY)
     .update(queryString)
@@ -73,14 +76,16 @@ const calculateTotalBalance = (balances, prices) => {
 // Get current prices for all trading pairs
 const getCurrentPrices = async () => {
   try {
+    console.log('💰 Fetching current prices from Binance...');
     const response = await axios.get(`${BINANCE_BASE_URL}/api/v3/ticker/price`);
     const prices = {};
     response.data.forEach(ticker => {
       prices[ticker.symbol] = ticker.price;
     });
+    console.log(`✅ Successfully fetched ${Object.keys(prices).length} prices`);
     return prices;
   } catch (error) {
-    console.error('Error fetching prices:', error.message);
+    console.error('❌ Error fetching prices:', error.message);
     return {};
   }
 };
@@ -90,23 +95,36 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    service: 'Binance Wallet Balance API'
+    service: 'Binance Wallet Balance API',
+    apiKeyConfigured: !!API_KEY,
+    secretKeyConfigured: !!SECRET_KEY
   });
 });
 
 // Get account information and balances
 app.get('/api/wallet/balance', async (req, res) => {
   try {
+    console.log('🔄 Fetching wallet balance...');
+    
     if (!API_KEY || !SECRET_KEY) {
+      console.error('❌ Missing Binance API credentials');
       return res.status(500).json({ 
-        error: 'Binance API credentials not configured' 
+        error: 'Binance API credentials not configured',
+        details: {
+          apiKey: !!API_KEY,
+          secretKey: !!SECRET_KEY
+        }
       });
     }
 
+    console.log('✅ API credentials found, fetching prices...');
+
     // Get current prices first
     const prices = await getCurrentPrices();
+    console.log(`📈 Fetched ${Object.keys(prices).length} price pairs`);
 
     // Get account information
+    console.log('👤 Fetching account information...');
     const accountParams = createSignedParams();
     const accountResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/account`, {
       headers: {
@@ -114,6 +132,8 @@ app.get('/api/wallet/balance', async (req, res) => {
       },
       params: accountParams
     });
+
+    console.log('✅ Account data received');
 
     const accountData = accountResponse.data;
     
@@ -185,24 +205,29 @@ app.get('/api/wallet/balance', async (req, res) => {
     res.json(balanceData);
 
   } catch (error) {
-    console.error('Binance API Error:', error.response?.data || error.message);
+    console.error('❌ Binance API Error:', error.response?.data || error.message);
     
     // Handle specific Binance errors
     if (error.response?.status === 401) {
+      console.error('🔐 Authentication failed - check API key and signature');
       res.status(401).json({ 
         error: 'Invalid API key or signature' 
       });
     } else if (error.response?.status === 403) {
+      console.error('🚫 API key lacks required permissions');
       res.status(403).json({ 
         error: 'API key does not have required permissions' 
       });
     } else if (error.response?.data?.msg) {
+      console.error('📛 Binance error message:', error.response.data.msg);
       res.status(400).json({ 
         error: error.response.data.msg 
       });
     } else {
+      console.error('🔥 Unknown error:', error.message);
       res.status(500).json({ 
-        error: 'Failed to fetch wallet balance from Binance' 
+        error: 'Failed to fetch wallet balance from Binance',
+        details: error.message
       });
     }
   }
@@ -258,9 +283,17 @@ app.get('/api/wallet/fees', async (req, res) => {
   }
 });
 
-// Serve frontend for all other routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+// Basic home route
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Binance Wallet Balance API is running!',
+    endpoints: [
+      'GET /api/health - Health check',
+      'GET /api/wallet/balance - Get wallet balance',
+      'GET /api/wallet/orders - Get open orders',
+      'GET /api/wallet/fees - Get trading fees'
+    ]
+  });
 });
 
 // Error handling middleware
@@ -274,5 +307,7 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`🚀 Binance Wallet Balance Server running on port ${PORT}`);
   console.log(`📊 API endpoints available at /api/wallet/balance`);
-  console.log(`🔑 Make sure BINANCE_API_KEY and BINANCE_SECRET_KEY are set`);
+  console.log(`🔑 API Key configured: ${API_KEY ? 'Yes' : 'No'}`);
+  console.log(`🔐 Secret Key configured: ${SECRET_KEY ? 'Yes' : 'No'}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
