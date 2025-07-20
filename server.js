@@ -283,8 +283,16 @@ app.get('/api/wallet/fees', async (req, res) => {
   }
 });
 
-// Basic home route
+// Serve static files
+app.use(express.static('public'));
+
+// Serve the main wallet app
 app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// API info endpoint
+app.get('/api/info', (req, res) => {
   res.json({ 
     message: 'Binance Wallet Balance API is running!',
     endpoints: [
