@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -12,8 +11,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Serve static files from public directory
-app.use(express.static(path.join(__dirname, 'public')));
+// Remove static file serving to avoid conflicts with embedded HTML route
 
 // Binance API Configuration
 const BINANCE_BASE_URL = 'https://api.binance.com';
@@ -274,7 +272,465 @@ app.get('/api/wallet/fees', async (req, res) => {
   }
 });
 
-// API info endpoint
+// Serve the main wallet app with embedded HTML
+app.get('/', (req, res) => {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Wallet Balance</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 50%, #0f172a 100%);
+            min-height: 100vh;
+        }
+        .card {
+            backdrop-filter: blur(10px);
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(71, 85, 105, 0.3);
+        }
+        .loading-spinner {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .balance-card {
+            background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        .status-connected {
+            background-color: #10b981;
+            box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+        }
+        .status-disconnected {
+            background-color: #ef4444;
+            box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+        }
+        .asset-item {
+            transition: background-color 0.2s;
+        }
+        .asset-item:hover {
+            background-color: rgba(71, 85, 105, 0.5);
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="max-w-md mx-auto">
+        <!-- Header -->
+        <div class="text-center mb-8 pt-8">
+            <div class="flex items-center justify-center mb-4">
+                <i data-lucide="wallet" class="w-8 h-8 text-blue-400 mr-2"></i>
+                <h1 class="text-2xl font-bold text-white">Trading Wallet</h1>
+            </div>
+            <p class="text-gray-400">Real-time Binance balance tracking</p>
+        </div>
+
+        <!-- Connection Status -->
+        <div class="card rounded-xl p-4 mb-6">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center">
+                    <i data-lucide="server" class="w-5 h-5 text-gray-400 mr-2"></i>
+                    <span class="text-white font-medium">Server Status</span>
+                </div>
+                <div id="connection-status" class="flex items-center text-green-400">
+                    <div class="status-dot status-connected mr-2"></div>
+                    <span class="text-sm font-medium">Connected</span>
+                </div>
+            </div>
+            
+            <div id="api-key-status" class="mt-3 p-3 bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg">
+                <div class="flex justify-between text-sm">
+                    <span class="text-blue-300">API Keys:</span>
+                    <span id="keys-status" class="text-yellow-400">Checking...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Balance Display -->
+        <div class="card rounded-xl p-6 mb-6">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-semibold text-white">Account Balance</h2>
+                <div class="flex items-center space-x-2">
+                    <button id="toggle-balance" class="text-gray-400 hover:text-white transition-colors">
+                        <i data-lucide="eye" class="w-5 h-5"></i>
+                    </button>
+                    <button id="refresh-balance" class="text-blue-400 hover:text-blue-300 transition-colors">
+                        <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Error Display -->
+            <div id="error-display" class="bg-red-900 bg-opacity-30 border border-red-700 rounded-lg p-4 mb-4 hidden">
+                <p class="text-red-300 text-sm" id="error-message"></p>
+            </div>
+
+            <!-- Loading State -->
+            <div id="loading-state" class="text-center py-8 hidden">
+                <i data-lucide="refresh-cw" class="w-8 h-8 text-blue-400 loading-spinner mx-auto mb-2"></i>
+                <p class="text-gray-400">Fetching balance from Binance...</p>
+            </div>
+
+            <!-- Balance Content -->
+            <div id="balance-content" class="space-y-4">
+                <!-- Total Balance -->
+                <div class="balance-card rounded-lg p-4">
+                    <div class="text-blue-100 text-sm font-medium">Total Balance</div>
+                    <div class="text-white text-3xl font-bold" id="total-balance">
+                        Click refresh to load
+                    </div>
+                    <div class="text-blue-200 text-sm mt-1" id="btc-equivalent">
+                        ≈ 0.00000000 BTC
+                    </div>
+                </div>
+
+                <!-- Balance Breakdown -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="card rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">Available</div>
+                        <div class="text-white text-lg font-semibold" id="available-balance">
+                            $0.00
+                        </div>
+                    </div>
+                    
+                    <div class="card rounded-lg p-4">
+                        <div class="text-gray-400 text-sm">In Orders</div>
+                        <div class="text-white text-lg font-semibold" id="orders-balance">
+                            $0.00
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Assets Breakdown -->
+                <div id="assets-section" class="card rounded-lg p-4 hidden">
+                    <div class="text-gray-400 text-sm mb-3">Your Assets</div>
+                    <div id="assets-list" class="space-y-2">
+                        <!-- Assets will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Last Updated -->
+                <div class="text-center text-gray-400 text-sm" id="last-updated">
+                    Click refresh to load balance
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <button id="view-orders" class="card rounded-lg p-4 text-center hover:bg-slate-700 transition-colors">
+                <i data-lucide="list" class="w-6 h-6 text-blue-400 mx-auto mb-2"></i>
+                <div class="text-white text-sm font-medium">View Orders</div>
+                <div class="text-gray-400 text-xs" id="orders-count">0 open</div>
+            </button>
+            
+            <button id="view-fees" class="card rounded-lg p-4 text-center hover:bg-slate-700 transition-colors">
+                <i data-lucide="percent" class="w-6 h-6 text-green-400 mx-auto mb-2"></i>
+                <div class="text-white text-sm font-medium">Trading Fees</div>
+                <div class="text-gray-400 text-xs" id="fees-info">Click to view</div>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let showBalance = true;
+        let balanceData = null;
+
+        // Wait for DOM to be fully loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Lucide icons
+            lucide.createIcons();
+
+            // Initialize app after DOM is ready
+            init();
+        });
+
+        // Check API status and configuration
+        async function checkApiStatus() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                
+                const keysStatus = document.getElementById('keys-status');
+                if (keysStatus) {
+                    if (data.apiKeyConfigured && data.secretKeyConfigured) {
+                        keysStatus.innerHTML = '<span class="text-green-400">✅ Configured</span>';
+                    } else {
+                        keysStatus.innerHTML = '<span class="text-red-400">❌ Missing</span>';
+                    }
+                }
+                
+                console.log('API Status:', data);
+            } catch (error) {
+                const keysStatus = document.getElementById('keys-status');
+                if (keysStatus) {
+                    keysStatus.innerHTML = '<span class="text-red-400">❌ Error</span>';
+                }
+                console.error('API Status check failed:', error);
+            }
+        }
+
+        // Fetch wallet balance with null checks
+        async function fetchBalance() {
+            const loadingState = document.getElementById('loading-state');
+            const balanceContent = document.getElementById('balance-content');
+            const errorDisplay = document.getElementById('error-display');
+            const refreshButton = document.getElementById('refresh-balance');
+
+            // Check if elements exist before manipulating them
+            if (!loadingState || !balanceContent || !errorDisplay || !refreshButton) {
+                console.error('Required DOM elements not found');
+                return;
+            }
+
+            loadingState.classList.remove('hidden');
+            balanceContent.classList.add('hidden');
+            errorDisplay.classList.add('hidden');
+            
+            const refreshIcon = refreshButton.querySelector('i');
+            if (refreshIcon) {
+                refreshIcon.classList.add('loading-spinner');
+            }
+
+            try {
+                console.log('🔄 Fetching balance...');
+                const response = await fetch('/api/wallet/balance');
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'HTTP ' + response.status);
+                }
+
+                const data = await response.json();
+                console.log('✅ Balance data:', data);
+                balanceData = data;
+                displayBalance(data);
+                updateLastUpdated();
+                
+            } catch (error) {
+                console.error('❌ Balance fetch error:', error);
+                const errorMessage = document.getElementById('error-message');
+                if (errorMessage) {
+                    errorMessage.textContent = error.message;
+                }
+                errorDisplay.classList.remove('hidden');
+            } finally {
+                loadingState.classList.add('hidden');
+                balanceContent.classList.remove('hidden');
+                if (refreshIcon) {
+                    refreshIcon.classList.remove('loading-spinner');
+                }
+            }
+        }
+
+        // Display balance data with null checks
+        function displayBalance(data) {
+            const totalBalance = document.getElementById('total-balance');
+            const btcEquivalent = document.getElementById('btc-equivalent');
+            const availableBalance = document.getElementById('available-balance');
+            const ordersBalance = document.getElementById('orders-balance');
+
+            if (totalBalance) {
+                totalBalance.textContent = formatCurrency(data.total, data.currency);
+            }
+            
+            if (btcEquivalent) {
+                if (data.btcValue) {
+                    btcEquivalent.textContent = '≈ ' + data.btcValue + ' BTC';
+                } else {
+                    btcEquivalent.textContent = '≈ 0.00000000 BTC';
+                }
+            }
+
+            if (availableBalance) {
+                availableBalance.textContent = formatCurrency(data.available, data.currency);
+            }
+
+            if (ordersBalance) {
+                ordersBalance.textContent = formatCurrency(data.inOrders || 0, data.currency);
+            }
+
+            // Display assets if available
+            if (data.balances && data.balances.length > 0) {
+                displayAssets(data.balances);
+            }
+        }
+
+        // Display assets breakdown
+        function displayAssets(balances) {
+            const assetsList = document.getElementById('assets-list');
+            const assetsSection = document.getElementById('assets-section');
+            
+            if (!assetsList || !assetsSection) return;
+            
+            // Filter and sort assets by value
+            const significantAssets = balances
+                .filter(asset => asset.usdtValue > 1) // Only show assets worth more than $1
+                .sort((a, b) => b.usdtValue - a.usdtValue)
+                .slice(0, 8); // Top 8 assets
+
+            if (significantAssets.length > 0) {
+                assetsList.innerHTML = significantAssets.map(asset => 
+                    '<div class="asset-item flex justify-between items-center p-2 rounded">' +
+                        '<div>' +
+                            '<span class="text-white font-medium">' + asset.asset + '</span>' +
+                            '<div class="text-gray-400 text-xs">' + formatNumber(asset.total) + '</div>' +
+                        '</div>' +
+                        '<div class="text-right">' +
+                            '<div class="text-white text-sm">' + formatCurrency(asset.usdtValue) + '</div>' +
+                            '<div class="text-gray-400 text-xs">' + ((asset.usdtValue / balanceData.total) * 100).toFixed(1) + '%</div>' +
+                        '</div>' +
+                    '</div>'
+                ).join('');
+                
+                assetsSection.classList.remove('hidden');
+            } else {
+                assetsSection.classList.add('hidden');
+            }
+        }
+
+        // Format currency
+        function formatCurrency(amount, currency = 'USD') {
+            if (!showBalance) return '••••••';
+            
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: currency === 'USDT' ? 'USD' : currency,
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            }).format(amount);
+        }
+
+        // Format numbers
+        function formatNumber(num) {
+            if (!showBalance) return '••••••';
+            if (num >= 1) return num.toFixed(4);
+            return num.toFixed(8);
+        }
+
+        // Update last updated time
+        function updateLastUpdated() {
+            const lastUpdatedElement = document.getElementById('last-updated');
+            if (lastUpdatedElement) {
+                const now = new Date().toLocaleTimeString();
+                lastUpdatedElement.textContent = 'Last updated: ' + now;
+            }
+        }
+
+        // Toggle balance visibility
+        function toggleBalanceVisibility() {
+            showBalance = !showBalance;
+            const toggleButton = document.getElementById('toggle-balance');
+            if (!toggleButton) return;
+
+            const icon = toggleButton.querySelector('i');
+            if (icon) {
+                if (showBalance) {
+                    icon.setAttribute('data-lucide', 'eye');
+                } else {
+                    icon.setAttribute('data-lucide', 'eye-off');
+                }
+                
+                lucide.createIcons();
+            }
+            
+            // Refresh display if we have data
+            if (balanceData) {
+                displayBalance(balanceData);
+            }
+        }
+
+        // Fetch open orders
+        async function fetchOrders() {
+            try {
+                const response = await fetch('/api/wallet/orders');
+                const data = await response.json();
+                const ordersCount = document.getElementById('orders-count');
+                if (ordersCount) {
+                    ordersCount.textContent = data.count + ' open';
+                }
+                console.log('Orders:', data);
+            } catch (error) {
+                console.error('Failed to fetch orders:', error);
+                const ordersCount = document.getElementById('orders-count');
+                if (ordersCount) {
+                    ordersCount.textContent = 'Error';
+                }
+            }
+        }
+
+        // Fetch trading fees
+        async function fetchFees() {
+            try {
+                const response = await fetch('/api/wallet/fees');
+                const data = await response.json();
+                const feesInfo = document.getElementById('fees-info');
+                if (feesInfo) {
+                    feesInfo.textContent = (data.takerCommission * 100).toFixed(3) + '%';
+                }
+                console.log('Fees:', data);
+            } catch (error) {
+                console.error('Failed to fetch fees:', error);
+                const feesInfo = document.getElementById('fees-info');
+                if (feesInfo) {
+                    feesInfo.textContent = 'Error';
+                }
+            }
+        }
+
+        // Add event listeners safely
+        function addEventListeners() {
+            const refreshButton = document.getElementById('refresh-balance');
+            const toggleButton = document.getElementById('toggle-balance');
+            const viewOrdersButton = document.getElementById('view-orders');
+            const viewFeesButton = document.getElementById('view-fees');
+
+            if (refreshButton) {
+                refreshButton.addEventListener('click', fetchBalance);
+            }
+
+            if (toggleButton) {
+                toggleButton.addEventListener('click', toggleBalanceVisibility);
+            }
+
+            if (viewOrdersButton) {
+                viewOrdersButton.addEventListener('click', fetchOrders);
+            }
+
+            if (viewFeesButton) {
+                viewFeesButton.addEventListener('click', fetchFees);
+            }
+        }
+
+        // Initialize app
+        async function init() {
+            console.log('🚀 Initializing Binance Wallet App...');
+            
+            // Add event listeners
+            addEventListeners();
+            
+            // Check API status
+            await checkApiStatus();
+            
+            // Auto-refresh connection status every 30 seconds
+            setInterval(checkApiStatus, 30000);
+        }
+    </script>
+</body>
+</html>`;
+  
+  res.send(html);
+});
 app.get('/api/info', (req, res) => {
   res.json({ 
     message: 'Binance Wallet Balance API is running!',
