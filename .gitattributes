@@ -1,29 +1,2 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-
-# JavaScript files
-*.js text eol=lf
-*.jsx text eol=lf
-*.ts text eol=lf
-*.tsx text eol=lf
-
-# JSON files
-*.json text eol=lf
-
-# HTML/CSS files
-*.html text eol=lf
-*.css text eol=lf
-
-# Config files
-*.yml text eol=lf
-*.yaml text eol=lf
-*.toml text eol=lf
-*.ini text eol=lf
-
-# Markdown files
-*.md text eol=lf
-*.mdx text eol=lf
-
-# Ignore certain files during language detection
-*.sql linguist-detectable=true
-*.sql linguist-language=sql
