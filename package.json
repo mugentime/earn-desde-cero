@@ -1,27 +1,15 @@
 {
-  "name": "binance-wallet-app",
+  "name": "binance-earn-balance",
   "version": "1.0.0",
-  "description": "Binance wallet balance tracker",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "build": "echo 'No build step required'",
-    "install": "npm ci --omit=dev"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5", 
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.1"
+    "axios": "^1.6.0"
   },
-  "devDependencies": {},
   "engines": {
-    "node": "18.x",
-    "npm": ">=9.0.0"
-  },
-  "keywords": ["binance", "wallet", "trading", "cryptocurrency"],
-  "author": "",
-  "license": "MIT",
-  "type": "commonjs"
+    "node": "18.x"
+  }
 }

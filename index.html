@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Binance Earn Balance</title>
+    <style>
+        body { font-family: Arial; margin: 50px; }
+        .balance { font-size: 24px; color: green; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Binance Earn Balance</h1>
+    <p>Total Earn Balance: <span id="balance" class="balance">Loading...</span></p>
+    <button onclick="refresh()">Refresh</button>
+    
+    <script>
+        function refresh() {
+            document.getElementById('balance').textContent = 'Loading...';
+            fetch('/earn')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('balance').textContent = 
+                        data.error ? data.error : '$' + data.totalAmountInUSDT;
+                })
+                .catch(err => {
+                    document.getElementById('balance').textContent = 'Error: ' + err.message;
+                });
+        }
+        
+        // Load on page start
+        refresh();
+    </script>
+</body>
+</html>
