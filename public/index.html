@@ -1,279 +1,3 @@
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const crypto = require('crypto');
-const path = require('path');
-require('dotenv').config();
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Binance API Configuration
-const BINANCE_BASE_URL = 'https://api.binance.com';
-const API_KEY = process.env.BINANCE_API_KEY;
-const SECRET_KEY = process.env.BINANCE_SECRET_KEY;
-
-// Generate signature for Binance API
-const generateSignature = (queryString) => {
-  if (!SECRET_KEY) {
-    throw new Error('SECRET_KEY is not configured');
-  }
-  return crypto
-    .createHmac('sha256', SECRET_KEY)
-    .update(queryString)
-    .digest('hex');
-};
-
-// Create signed request parameters
-const createSignedParams = (params = {}) => {
-  const timestamp = Date.now();
-  const queryString = new URLSearchParams({
-    ...params,
-    timestamp
-  }).toString();
-  
-  const signature = generateSignature(queryString);
-  
-  return {
-    ...params,
-    timestamp,
-    signature
-  };
-};
-
-// Calculate total balance in USDT
-const calculateTotalBalance = (balances, prices) => {
-  let total = 0;
-  
-  balances.forEach(balance => {
-    const free = parseFloat(balance.free);
-    const locked = parseFloat(balance.locked);
-    const totalAmount = free + locked;
-    
-    if (totalAmount > 0) {
-      if (balance.asset === 'USDT') {
-        total += totalAmount;
-      } else if (balance.asset === 'BUSD') {
-        total += totalAmount; // BUSD ≈ 1 USDT
-      } else {
-        // Convert other assets to USDT using current prices
-        const symbol = `${balance.asset}USDT`;
-        const price = prices[symbol];
-        if (price) {
-          total += totalAmount * parseFloat(price);
-        }
-      }
-    }
-  });
-  
-  return total;
-};
-
-// Get current prices for all trading pairs
-const getCurrentPrices = async () => {
-  try {
-    console.log('💰 Fetching current prices from Binance...');
-    const response = await axios.get(`${BINANCE_BASE_URL}/api/v3/ticker/price`);
-    const prices = {};
-    response.data.forEach(ticker => {
-      prices[ticker.symbol] = ticker.price;
-    });
-    console.log(`✅ Successfully fetched ${Object.keys(prices).length} prices`);
-    return prices;
-  } catch (error) {
-    console.error('❌ Error fetching prices:', error.message);
-    return {};
-  }
-};
-
-// Health check endpoint with enhanced debugging
-app.get('/api/health', (req, res) => {
-  const apiKeyExists = !!process.env.BINANCE_API_KEY;
-  const secretKeyExists = !!process.env.BINANCE_SECRET_KEY;
-  
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    service: 'Binance Wallet Balance API',
-    apiKeyConfigured: apiKeyExists,
-    secretKeyConfigured: secretKeyExists,
-    environment: process.env.NODE_ENV || 'development',
-    debug: {
-      apiKeyLength: process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.length : 0,
-      secretKeyLength: process.env.BINANCE_SECRET_KEY ? process.env.BINANCE_SECRET_KEY.length : 0,
-      apiKeyStart: process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.substring(0, 8) + '...' : 'undefined',
-      allEnvVars: Object.keys(process.env).filter(key => key.includes('BINANCE'))
-    }
-  });
-});
-
-// Get account information and balances
-app.get('/api/wallet/balance', async (req, res) => {
-  try {
-    console.log('🔄 Fetching wallet balance...');
-    
-    if (!API_KEY || !SECRET_KEY) {
-      console.error('❌ Missing Binance API credentials');
-      return res.status(500).json({ 
-        error: 'Binance API credentials not configured',
-        details: {
-          apiKey: !!API_KEY,
-          secretKey: !!SECRET_KEY
-        }
-      });
-    }
-
-    console.log('✅ API credentials found, fetching prices...');
-
-    // Get current prices first
-    const prices = await getCurrentPrices();
-    console.log(`📈 Fetched ${Object.keys(prices).length} price pairs`);
-
-    // Get account information
-    console.log('👤 Fetching account information...');
-    const accountParams = createSignedParams();
-    const accountResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/account`, {
-      headers: {
-        'X-MBX-APIKEY': API_KEY
-      },
-      params: accountParams
-    });
-
-    console.log('✅ Account data received');
-    const accountData = accountResponse.data;
-    
-    // Filter out zero balances
-    const nonZeroBalances = accountData.balances.filter(balance => 
-      parseFloat(balance.free) > 0 || parseFloat(balance.locked) > 0
-    );
-
-    // Calculate balances
-    const totalBalance = calculateTotalBalance(nonZeroBalances, prices);
-    const availableBalance = calculateTotalBalance(
-      nonZeroBalances.map(b => ({ ...b, locked: '0' })), 
-      prices
-    );
-    const lockedBalance = totalBalance - availableBalance;
-
-    // Prepare response data
-    const balanceData = {
-      total: Math.round(totalBalance * 100) / 100,
-      available: Math.round(availableBalance * 100) / 100,
-      inOrders: Math.round(lockedBalance * 100) / 100,
-      currency: 'USDT',
-      timestamp: new Date().toISOString(),
-      exchangeTimestamp: accountData.updateTime,
-      balances: nonZeroBalances.map(balance => ({
-        asset: balance.asset,
-        free: parseFloat(balance.free),
-        locked: parseFloat(balance.locked),
-        total: parseFloat(balance.free) + parseFloat(balance.locked),
-        usdtValue: balance.asset === 'USDT' ? 
-          parseFloat(balance.free) + parseFloat(balance.locked) :
-          (prices[`${balance.asset}USDT`] ? 
-            (parseFloat(balance.free) + parseFloat(balance.locked)) * parseFloat(prices[`${balance.asset}USDT`]) :
-            0)
-      })).filter(b => b.total > 0),
-      permissions: accountData.permissions,
-      canTrade: accountData.canTrade,
-      canWithdraw: accountData.canWithdraw,
-      canDeposit: accountData.canDeposit
-    };
-
-    // Add BTC equivalent
-    const btcPrice = prices['BTCUSDT'];
-    if (btcPrice) {
-      balanceData.btcValue = (totalBalance / parseFloat(btcPrice)).toFixed(8);
-    }
-
-    res.json(balanceData);
-
-  } catch (error) {
-    console.error('❌ Binance API Error:', error.response?.data || error.message);
-    
-    // Handle specific Binance errors
-    if (error.response?.status === 401) {
-      console.error('🔐 Authentication failed - check API key and signature');
-      res.status(401).json({ 
-        error: 'Invalid API key or signature' 
-      });
-    } else if (error.response?.status === 403) {
-      console.error('🚫 API key lacks required permissions');
-      res.status(403).json({ 
-        error: 'API key does not have required permissions' 
-      });
-    } else if (error.response?.data?.msg) {
-      console.error('📛 Binance error message:', error.response.data.msg);
-      res.status(400).json({ 
-        error: error.response.data.msg 
-      });
-    } else {
-      console.error('🔥 Unknown error:', error.message);
-      res.status(500).json({ 
-        error: 'Failed to fetch wallet balance from Binance',
-        details: error.message
-      });
-    }
-  }
-});
-
-// Get open orders
-app.get('/api/wallet/orders', async (req, res) => {
-  try {
-    const ordersParams = createSignedParams();
-    const ordersResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/openOrders`, {
-      headers: {
-        'X-MBX-APIKEY': API_KEY
-      },
-      params: ordersParams
-    });
-
-    res.json({
-      orders: ordersResponse.data,
-      count: ordersResponse.data.length
-    });
-
-  } catch (error) {
-    console.error('Error fetching orders:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch open orders' 
-    });
-  }
-});
-
-// Get trading fees
-app.get('/api/wallet/fees', async (req, res) => {
-  try {
-    const feesParams = createSignedParams();
-    const feesResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/account`, {
-      headers: {
-        'X-MBX-APIKEY': API_KEY
-      },
-      params: feesParams
-    });
-
-    res.json({
-      makerCommission: feesResponse.data.makerCommission / 10000, // Convert to percentage
-      takerCommission: feesResponse.data.takerCommission / 10000,
-      buyerCommission: feesResponse.data.buyerCommission / 10000,
-      sellerCommission: feesResponse.data.sellerCommission / 10000
-    });
-
-  } catch (error) {
-    console.error('Error fetching fees:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to fetch trading fees' 
-    });
-  }
-});
-
-// Serve the main wallet app with embedded HTML
-app.get('/', (req, res) => {
-  const html = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -445,8 +169,14 @@ app.get('/', (req, res) => {
         let showBalance = true;
         let balanceData = null;
 
-        // Initialize Lucide icons
-        lucide.createIcons();
+        // Wait for DOM to be fully loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Lucide icons
+            lucide.createIcons();
+
+            // Initialize app after DOM is ready
+            init();
+        });
 
         // Check API status and configuration
         async function checkApiStatus() {
@@ -455,31 +185,45 @@ app.get('/', (req, res) => {
                 const data = await response.json();
                 
                 const keysStatus = document.getElementById('keys-status');
-                
-                if (data.apiKeyConfigured && data.secretKeyConfigured) {
-                    keysStatus.innerHTML = '<span class="text-green-400">✅ Configured</span>';
-                } else {
-                    keysStatus.innerHTML = '<span class="text-red-400">❌ Missing</span>';
+                if (keysStatus) {
+                    if (data.apiKeyConfigured && data.secretKeyConfigured) {
+                        keysStatus.innerHTML = '<span class="text-green-400">✅ Configured</span>';
+                    } else {
+                        keysStatus.innerHTML = '<span class="text-red-400">❌ Missing</span>';
+                    }
                 }
                 
                 console.log('API Status:', data);
             } catch (error) {
-                document.getElementById('keys-status').innerHTML = '<span class="text-red-400">❌ Error</span>';
+                const keysStatus = document.getElementById('keys-status');
+                if (keysStatus) {
+                    keysStatus.innerHTML = '<span class="text-red-400">❌ Error</span>';
+                }
                 console.error('API Status check failed:', error);
             }
         }
 
-        // Fetch wallet balance
+        // Fetch wallet balance with null checks
         async function fetchBalance() {
             const loadingState = document.getElementById('loading-state');
             const balanceContent = document.getElementById('balance-content');
             const errorDisplay = document.getElementById('error-display');
             const refreshButton = document.getElementById('refresh-balance');
 
+            // Check if elements exist before manipulating them
+            if (!loadingState || !balanceContent || !errorDisplay || !refreshButton) {
+                console.error('Required DOM elements not found');
+                return;
+            }
+
             loadingState.classList.remove('hidden');
             balanceContent.classList.add('hidden');
             errorDisplay.classList.add('hidden');
-            refreshButton.querySelector('i').classList.add('loading-spinner');
+            
+            const refreshIcon = refreshButton.querySelector('i');
+            if (refreshIcon) {
+                refreshIcon.classList.add('loading-spinner');
+            }
 
             try {
                 console.log('🔄 Fetching balance...');
@@ -487,7 +231,7 @@ app.get('/', (req, res) => {
                 
                 if (!response.ok) {
                     const errorData = await response.json();
-                    throw new Error(errorData.error || \`HTTP \${response.status}\`);
+                    throw new Error(errorData.error || `HTTP ${response.status}`);
                 }
 
                 const data = await response.json();
@@ -498,30 +242,46 @@ app.get('/', (req, res) => {
                 
             } catch (error) {
                 console.error('❌ Balance fetch error:', error);
-                document.getElementById('error-message').textContent = error.message;
+                const errorMessage = document.getElementById('error-message');
+                if (errorMessage) {
+                    errorMessage.textContent = error.message;
+                }
                 errorDisplay.classList.remove('hidden');
             } finally {
                 loadingState.classList.add('hidden');
                 balanceContent.classList.remove('hidden');
-                refreshButton.querySelector('i').classList.remove('loading-spinner');
+                if (refreshIcon) {
+                    refreshIcon.classList.remove('loading-spinner');
+                }
             }
         }
 
-        // Display balance data
+        // Display balance data with null checks
         function displayBalance(data) {
-            // Update total balance
-            document.getElementById('total-balance').textContent = formatCurrency(data.total, data.currency);
+            const totalBalance = document.getElementById('total-balance');
+            const btcEquivalent = document.getElementById('btc-equivalent');
+            const availableBalance = document.getElementById('available-balance');
+            const ordersBalance = document.getElementById('orders-balance');
+
+            if (totalBalance) {
+                totalBalance.textContent = formatCurrency(data.total, data.currency);
+            }
             
-            // Update BTC equivalent
-            if (data.btcValue) {
-                document.getElementById('btc-equivalent').textContent = \`≈ \${data.btcValue} BTC\`;
-            } else {
-                document.getElementById('btc-equivalent').textContent = '≈ 0.00000000 BTC';
+            if (btcEquivalent) {
+                if (data.btcValue) {
+                    btcEquivalent.textContent = `≈ ${data.btcValue} BTC`;
+                } else {
+                    btcEquivalent.textContent = '≈ 0.00000000 BTC';
+                }
             }
 
-            // Update available and orders
-            document.getElementById('available-balance').textContent = formatCurrency(data.available, data.currency);
-            document.getElementById('orders-balance').textContent = formatCurrency(data.inOrders || 0, data.currency);
+            if (availableBalance) {
+                availableBalance.textContent = formatCurrency(data.available, data.currency);
+            }
+
+            if (ordersBalance) {
+                ordersBalance.textContent = formatCurrency(data.inOrders || 0, data.currency);
+            }
 
             // Display assets if available
             if (data.balances && data.balances.length > 0) {
@@ -534,6 +294,8 @@ app.get('/', (req, res) => {
             const assetsList = document.getElementById('assets-list');
             const assetsSection = document.getElementById('assets-section');
             
+            if (!assetsList || !assetsSection) return;
+            
             // Filter and sort assets by value
             const significantAssets = balances
                 .filter(asset => asset.usdtValue > 1) // Only show assets worth more than $1
@@ -541,18 +303,18 @@ app.get('/', (req, res) => {
                 .slice(0, 8); // Top 8 assets
 
             if (significantAssets.length > 0) {
-                assetsList.innerHTML = significantAssets.map(asset => \`
+                assetsList.innerHTML = significantAssets.map(asset => `
                     <div class="asset-item flex justify-between items-center p-2 rounded">
                         <div>
-                            <span class="text-white font-medium">\${asset.asset}</span>
-                            <div class="text-gray-400 text-xs">\${formatNumber(asset.total)}</div>
+                            <span class="text-white font-medium">${asset.asset}</span>
+                            <div class="text-gray-400 text-xs">${formatNumber(asset.total)}</div>
                         </div>
                         <div class="text-right">
-                            <div class="text-white text-sm">\${formatCurrency(asset.usdtValue)}</div>
-                            <div class="text-gray-400 text-xs">\${((asset.usdtValue / balanceData.total) * 100).toFixed(1)}%</div>
+                            <div class="text-white text-sm">${formatCurrency(asset.usdtValue)}</div>
+                            <div class="text-gray-400 text-xs">${((asset.usdtValue / balanceData.total) * 100).toFixed(1)}%</div>
                         </div>
                     </div>
-                \`).join('');
+                `).join('');
                 
                 assetsSection.classList.remove('hidden');
             } else {
@@ -581,22 +343,29 @@ app.get('/', (req, res) => {
 
         // Update last updated time
         function updateLastUpdated() {
-            const now = new Date().toLocaleTimeString();
-            document.getElementById('last-updated').textContent = \`Last updated: \${now}\`;
+            const lastUpdatedElement = document.getElementById('last-updated');
+            if (lastUpdatedElement) {
+                const now = new Date().toLocaleTimeString();
+                lastUpdatedElement.textContent = `Last updated: ${now}`;
+            }
         }
 
         // Toggle balance visibility
         function toggleBalanceVisibility() {
             showBalance = !showBalance;
-            const icon = document.getElementById('toggle-balance').querySelector('i');
-            
-            if (showBalance) {
-                icon.setAttribute('data-lucide', 'eye');
-            } else {
-                icon.setAttribute('data-lucide', 'eye-off');
+            const toggleButton = document.getElementById('toggle-balance');
+            if (!toggleButton) return;
+
+            const icon = toggleButton.querySelector('i');
+            if (icon) {
+                if (showBalance) {
+                    icon.setAttribute('data-lucide', 'eye');
+                } else {
+                    icon.setAttribute('data-lucide', 'eye-off');
+                }
+                
+                lucide.createIcons();
             }
-            
-            lucide.createIcons();
             
             // Refresh display if we have data
             if (balanceData) {
@@ -609,11 +378,17 @@ app.get('/', (req, res) => {
             try {
                 const response = await fetch('/api/wallet/orders');
                 const data = await response.json();
-                document.getElementById('orders-count').textContent = \`\${data.count} open\`;
+                const ordersCount = document.getElementById('orders-count');
+                if (ordersCount) {
+                    ordersCount.textContent = `${data.count} open`;
+                }
                 console.log('Orders:', data);
             } catch (error) {
                 console.error('Failed to fetch orders:', error);
-                document.getElementById('orders-count').textContent = 'Error';
+                const ordersCount = document.getElementById('orders-count');
+                if (ordersCount) {
+                    ordersCount.textContent = 'Error';
+                }
             }
         }
 
@@ -622,76 +397,57 @@ app.get('/', (req, res) => {
             try {
                 const response = await fetch('/api/wallet/fees');
                 const data = await response.json();
-                document.getElementById('fees-info').textContent = \`\${(data.takerCommission * 100).toFixed(3)}%\`;
+                const feesInfo = document.getElementById('fees-info');
+                if (feesInfo) {
+                    feesInfo.textContent = `${(data.takerCommission * 100).toFixed(3)}%`;
+                }
                 console.log('Fees:', data);
             } catch (error) {
                 console.error('Failed to fetch fees:', error);
-                document.getElementById('fees-info').textContent = 'Error';
+                const feesInfo = document.getElementById('fees-info');
+                if (feesInfo) {
+                    feesInfo.textContent = 'Error';
+                }
             }
         }
 
-        // Event listeners
-        document.getElementById('refresh-balance').addEventListener('click', fetchBalance);
-        document.getElementById('toggle-balance').addEventListener('click', toggleBalanceVisibility);
-        document.getElementById('view-orders').addEventListener('click', fetchOrders);
-        document.getElementById('view-fees').addEventListener('click', fetchFees);
+        // Add event listeners safely
+        function addEventListeners() {
+            const refreshButton = document.getElementById('refresh-balance');
+            const toggleButton = document.getElementById('toggle-balance');
+            const viewOrdersButton = document.getElementById('view-orders');
+            const viewFeesButton = document.getElementById('view-fees');
+
+            if (refreshButton) {
+                refreshButton.addEventListener('click', fetchBalance);
+            }
+
+            if (toggleButton) {
+                toggleButton.addEventListener('click', toggleBalanceVisibility);
+            }
+
+            if (viewOrdersButton) {
+                viewOrdersButton.addEventListener('click', fetchOrders);
+            }
+
+            if (viewFeesButton) {
+                viewFeesButton.addEventListener('click', fetchFees);
+            }
+        }
 
         // Initialize app
         async function init() {
             console.log('🚀 Initializing Binance Wallet App...');
+            
+            // Add event listeners
+            addEventListeners();
+            
+            // Check API status
             await checkApiStatus();
             
             // Auto-refresh connection status every 30 seconds
             setInterval(checkApiStatus, 30000);
         }
-
-        // Start the app
-        init();
     </script>
 </body>
-</html>`;
-  
-  res.send(html);
-});
-
-// API info endpoint
-app.get('/api/info', (req, res) => {
-  res.json({ 
-    message: 'Binance Wallet Balance API is running!',
-    endpoints: [
-      'GET /api/health - Health check',
-      'GET /api/wallet/balance - Get wallet balance',
-      'GET /api/wallet/orders - Get open orders',
-      'GET /api/wallet/fees - Get trading fees'
-    ]
-  });
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Server Error:', error);
-  res.status(500).json({ 
-    error: 'Internal server error' 
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Binance Wallet Balance Server running on port ${PORT}`);
-  console.log(`📊 API endpoints available at /api/wallet/balance`);
-  console.log(`🔑 API Key configured: ${API_KEY ? 'Yes' : 'No'}`);
-  console.log(`🔐 Secret Key configured: ${SECRET_KEY ? 'Yes' : 'No'}`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Debug environment variables
-  console.log('🐛 Debug Info:');
-  console.log(`   API Key length: ${process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.length : 0}`);
-  console.log(`   Secret Key length: ${process.env.BINANCE_SECRET_KEY ? process.env.BINANCE_SECRET_KEY.length : 0}`);
-  console.log(`   Available BINANCE env vars: ${Object.keys(process.env).filter(key => key.includes('BINANCE')).join(', ')}`);
-  
-  if (!API_KEY || !SECRET_KEY) {
-    console.log('⚠️  WARNING: Binance API credentials not found!');
-    console.log('   Make sure these environment variables are set:');
-    console.log('   - BINANCE_API_KEY');
-    console.log('   - BINANCE_SECRET_KEY');
-  }
-});
+</html>

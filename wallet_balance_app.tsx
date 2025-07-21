@@ -25,7 +25,8 @@ const WalletBalanceApp = () => {
       });
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
       
       const data = await response.json();
@@ -210,6 +211,40 @@ const WalletBalanceApp = () => {
                     <div className="text-gray-400 text-sm mb-2">Active Positions</div>
                     <div className="text-white text-lg font-semibold">
                       {balance.positions.length} position{balance.positions.length !== 1 ? 's' : ''}
+                    </div>
+                  </div>
+                )}
+
+                {/* Assets Breakdown */}
+                {balance.balances && balance.balances.length > 0 && (
+                  <div className="bg-slate-700 rounded-lg p-4">
+                    <div className="text-gray-400 text-sm mb-3">Your Assets</div>
+                    <div className="space-y-2">
+                      {balance.balances
+                        .filter(asset => asset.usdtValue > 1)
+                        .sort((a, b) => b.usdtValue - a.usdtValue)
+                        .slice(0, 5)
+                        .map((asset, index) => (
+                          <div key={index} className="flex justify-between items-center p-2 rounded hover:bg-slate-600 transition-colors">
+                            <div>
+                              <span className="text-white font-medium">{asset.asset}</span>
+                              <div className="text-gray-400 text-xs">
+                                {showBalance ? 
+                                  (asset.total >= 1 ? asset.total.toFixed(4) : asset.total.toFixed(8)) : 
+                                  '••••••'
+                                }
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-white text-sm">
+                                {showBalance ? formatCurrency(asset.usdtValue) : '••••••'}
+                              </div>
+                              <div className="text-gray-400 text-xs">
+                                {showBalance ? `${((asset.usdtValue / balance.total) * 100).toFixed(1)}%` : '••••'}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   </div>
                 )}
