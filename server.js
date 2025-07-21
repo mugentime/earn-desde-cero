@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const crypto = require('crypto');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -10,8 +11,6 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
-
-// Remove static file serving to avoid conflicts with embedded HTML route
 
 // Binance API Configuration
 const BINANCE_BASE_URL = 'https://api.binance.com';
@@ -103,12 +102,7 @@ app.get('/api/health', (req, res) => {
     apiKeyConfigured: apiKeyExists,
     secretKeyConfigured: secretKeyExists,
     environment: process.env.NODE_ENV || 'development',
-    debug: {
-      apiKeyLength: process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.length : 0,
-      secretKeyLength: process.env.BINANCE_SECRET_KEY ? process.env.BINANCE_SECRET_KEY.length : 0,
-      apiKeyStart: process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.substring(0, 8) + '...' : 'undefined',
-      allEnvVars: Object.keys(process.env).filter(key => key.includes('BINANCE'))
-    }
+    version: '1.0.0'
   });
 });
 
@@ -225,6 +219,12 @@ app.get('/api/wallet/balance', async (req, res) => {
 // Get open orders
 app.get('/api/wallet/orders', async (req, res) => {
   try {
+    if (!API_KEY || !SECRET_KEY) {
+      return res.status(500).json({ 
+        error: 'Binance API credentials not configured' 
+      });
+    }
+
     const ordersParams = createSignedParams();
     const ordersResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/openOrders`, {
       headers: {
@@ -249,6 +249,12 @@ app.get('/api/wallet/orders', async (req, res) => {
 // Get trading fees
 app.get('/api/wallet/fees', async (req, res) => {
   try {
+    if (!API_KEY || !SECRET_KEY) {
+      return res.status(500).json({ 
+        error: 'Binance API credentials not configured' 
+      });
+    }
+
     const feesParams = createSignedParams();
     const feesResponse = await axios.get(`${BINANCE_BASE_URL}/api/v3/account`, {
       headers: {
@@ -440,20 +446,28 @@ app.get('/', (req, res) => {
                 <div class="text-gray-400 text-xs" id="fees-info">Click to view</div>
             </button>
         </div>
+
+        <!-- Railway Deployment Status -->
+        <div class="card rounded-xl p-4 mb-6">
+            <h3 class="text-white font-semibold mb-3 flex items-center">
+                <i data-lucide="cloud" class="w-5 h-5 mr-2"></i>
+                Deployment Status
+            </h3>
+            <div class="text-gray-300 text-sm space-y-2">
+                <p><strong>✅ Server:</strong> Running on Railway</p>
+                <p><strong>🔗 Frontend:</strong> Embedded HTML served directly</p>
+                <p><strong>🔑 Environment:</strong> <span id="env-status">Check API keys above</span></p>
+                <p><strong>📡 API:</strong> Ready for Binance connection</p>
+            </div>
+        </div>
     </div>
 
     <script>
         let showBalance = true;
         let balanceData = null;
 
-        // Wait for DOM to be fully loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize Lucide icons
-            lucide.createIcons();
-
-            // Initialize app after DOM is ready
-            init();
-        });
+        // Initialize Lucide icons
+        lucide.createIcons();
 
         // Check API status and configuration
         async function checkApiStatus() {
@@ -462,45 +476,35 @@ app.get('/', (req, res) => {
                 const data = await response.json();
                 
                 const keysStatus = document.getElementById('keys-status');
-                if (keysStatus) {
-                    if (data.apiKeyConfigured && data.secretKeyConfigured) {
-                        keysStatus.innerHTML = '<span class="text-green-400">✅ Configured</span>';
-                    } else {
-                        keysStatus.innerHTML = '<span class="text-red-400">❌ Missing</span>';
-                    }
+                const envStatus = document.getElementById('env-status');
+                
+                if (data.apiKeyConfigured && data.secretKeyConfigured) {
+                    keysStatus.innerHTML = '<span class="text-green-400">✅ Configured</span>';
+                    envStatus.textContent = 'API keys configured';
+                } else {
+                    keysStatus.innerHTML = '<span class="text-red-400">❌ Missing</span>';
+                    envStatus.textContent = 'API keys needed';
                 }
                 
                 console.log('API Status:', data);
             } catch (error) {
-                const keysStatus = document.getElementById('keys-status');
-                if (keysStatus) {
-                    keysStatus.innerHTML = '<span class="text-red-400">❌ Error</span>';
-                }
+                document.getElementById('keys-status').innerHTML = '<span class="text-red-400">❌ Error</span>';
+                document.getElementById('env-status').textContent = 'Connection error';
                 console.error('API Status check failed:', error);
             }
         }
 
-        // Fetch wallet balance with null checks
+        // Fetch wallet balance
         async function fetchBalance() {
             const loadingState = document.getElementById('loading-state');
             const balanceContent = document.getElementById('balance-content');
             const errorDisplay = document.getElementById('error-display');
             const refreshButton = document.getElementById('refresh-balance');
 
-            // Check if elements exist before manipulating them
-            if (!loadingState || !balanceContent || !errorDisplay || !refreshButton) {
-                console.error('Required DOM elements not found');
-                return;
-            }
-
             loadingState.classList.remove('hidden');
             balanceContent.classList.add('hidden');
             errorDisplay.classList.add('hidden');
-            
-            const refreshIcon = refreshButton.querySelector('i');
-            if (refreshIcon) {
-                refreshIcon.classList.add('loading-spinner');
-            }
+            refreshButton.querySelector('i').classList.add('loading-spinner');
 
             try {
                 console.log('🔄 Fetching balance...');
@@ -508,7 +512,7 @@ app.get('/', (req, res) => {
                 
                 if (!response.ok) {
                     const errorData = await response.json();
-                    throw new Error(errorData.error || 'HTTP ' + response.status);
+                    throw new Error(errorData.error || \`HTTP \${response.status}\`);
                 }
 
                 const data = await response.json();
@@ -519,46 +523,30 @@ app.get('/', (req, res) => {
                 
             } catch (error) {
                 console.error('❌ Balance fetch error:', error);
-                const errorMessage = document.getElementById('error-message');
-                if (errorMessage) {
-                    errorMessage.textContent = error.message;
-                }
+                document.getElementById('error-message').textContent = error.message;
                 errorDisplay.classList.remove('hidden');
             } finally {
                 loadingState.classList.add('hidden');
                 balanceContent.classList.remove('hidden');
-                if (refreshIcon) {
-                    refreshIcon.classList.remove('loading-spinner');
-                }
+                refreshButton.querySelector('i').classList.remove('loading-spinner');
             }
         }
 
-        // Display balance data with null checks
+        // Display balance data
         function displayBalance(data) {
-            const totalBalance = document.getElementById('total-balance');
-            const btcEquivalent = document.getElementById('btc-equivalent');
-            const availableBalance = document.getElementById('available-balance');
-            const ordersBalance = document.getElementById('orders-balance');
-
-            if (totalBalance) {
-                totalBalance.textContent = formatCurrency(data.total, data.currency);
-            }
+            // Update total balance
+            document.getElementById('total-balance').textContent = formatCurrency(data.total, data.currency);
             
-            if (btcEquivalent) {
-                if (data.btcValue) {
-                    btcEquivalent.textContent = '≈ ' + data.btcValue + ' BTC';
-                } else {
-                    btcEquivalent.textContent = '≈ 0.00000000 BTC';
-                }
+            // Update BTC equivalent
+            if (data.btcValue) {
+                document.getElementById('btc-equivalent').textContent = \`≈ \${data.btcValue} BTC\`;
+            } else {
+                document.getElementById('btc-equivalent').textContent = '≈ 0.00000000 BTC';
             }
 
-            if (availableBalance) {
-                availableBalance.textContent = formatCurrency(data.available, data.currency);
-            }
-
-            if (ordersBalance) {
-                ordersBalance.textContent = formatCurrency(data.inOrders || 0, data.currency);
-            }
+            // Update available and orders
+            document.getElementById('available-balance').textContent = formatCurrency(data.available, data.currency);
+            document.getElementById('orders-balance').textContent = formatCurrency(data.inOrders || 0, data.currency);
 
             // Display assets if available
             if (data.balances && data.balances.length > 0) {
@@ -571,8 +559,6 @@ app.get('/', (req, res) => {
             const assetsList = document.getElementById('assets-list');
             const assetsSection = document.getElementById('assets-section');
             
-            if (!assetsList || !assetsSection) return;
-            
             // Filter and sort assets by value
             const significantAssets = balances
                 .filter(asset => asset.usdtValue > 1) // Only show assets worth more than $1
@@ -580,18 +566,18 @@ app.get('/', (req, res) => {
                 .slice(0, 8); // Top 8 assets
 
             if (significantAssets.length > 0) {
-                assetsList.innerHTML = significantAssets.map(asset => 
-                    '<div class="asset-item flex justify-between items-center p-2 rounded">' +
-                        '<div>' +
-                            '<span class="text-white font-medium">' + asset.asset + '</span>' +
-                            '<div class="text-gray-400 text-xs">' + formatNumber(asset.total) + '</div>' +
-                        '</div>' +
-                        '<div class="text-right">' +
-                            '<div class="text-white text-sm">' + formatCurrency(asset.usdtValue) + '</div>' +
-                            '<div class="text-gray-400 text-xs">' + ((asset.usdtValue / balanceData.total) * 100).toFixed(1) + '%</div>' +
-                        '</div>' +
-                    '</div>'
-                ).join('');
+                assetsList.innerHTML = significantAssets.map(asset => \`
+                    <div class="asset-item flex justify-between items-center p-2 rounded">
+                        <div>
+                            <span class="text-white font-medium">\${asset.asset}</span>
+                            <div class="text-gray-400 text-xs">\${formatNumber(asset.total)}</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-white text-sm">\${formatCurrency(asset.usdtValue)}</div>
+                            <div class="text-gray-400 text-xs">\${((asset.usdtValue / balanceData.total) * 100).toFixed(1)}%</div>
+                        </div>
+                    </div>
+                \`).join('');
                 
                 assetsSection.classList.remove('hidden');
             } else {
@@ -620,29 +606,22 @@ app.get('/', (req, res) => {
 
         // Update last updated time
         function updateLastUpdated() {
-            const lastUpdatedElement = document.getElementById('last-updated');
-            if (lastUpdatedElement) {
-                const now = new Date().toLocaleTimeString();
-                lastUpdatedElement.textContent = 'Last updated: ' + now;
-            }
+            const now = new Date().toLocaleTimeString();
+            document.getElementById('last-updated').textContent = \`Last updated: \${now}\`;
         }
 
         // Toggle balance visibility
         function toggleBalanceVisibility() {
             showBalance = !showBalance;
-            const toggleButton = document.getElementById('toggle-balance');
-            if (!toggleButton) return;
-
-            const icon = toggleButton.querySelector('i');
-            if (icon) {
-                if (showBalance) {
-                    icon.setAttribute('data-lucide', 'eye');
-                } else {
-                    icon.setAttribute('data-lucide', 'eye-off');
-                }
-                
-                lucide.createIcons();
+            const icon = document.getElementById('toggle-balance').querySelector('i');
+            
+            if (showBalance) {
+                icon.setAttribute('data-lucide', 'eye');
+            } else {
+                icon.setAttribute('data-lucide', 'eye-off');
             }
+            
+            lucide.createIcons();
             
             // Refresh display if we have data
             if (balanceData) {
@@ -655,17 +634,11 @@ app.get('/', (req, res) => {
             try {
                 const response = await fetch('/api/wallet/orders');
                 const data = await response.json();
-                const ordersCount = document.getElementById('orders-count');
-                if (ordersCount) {
-                    ordersCount.textContent = data.count + ' open';
-                }
+                document.getElementById('orders-count').textContent = \`\${data.count} open\`;
                 console.log('Orders:', data);
             } catch (error) {
                 console.error('Failed to fetch orders:', error);
-                const ordersCount = document.getElementById('orders-count');
-                if (ordersCount) {
-                    ordersCount.textContent = 'Error';
-                }
+                document.getElementById('orders-count').textContent = 'Error';
             }
         }
 
@@ -674,72 +647,50 @@ app.get('/', (req, res) => {
             try {
                 const response = await fetch('/api/wallet/fees');
                 const data = await response.json();
-                const feesInfo = document.getElementById('fees-info');
-                if (feesInfo) {
-                    feesInfo.textContent = (data.takerCommission * 100).toFixed(3) + '%';
-                }
+                document.getElementById('fees-info').textContent = \`\${(data.takerCommission * 100).toFixed(3)}%\`;
                 console.log('Fees:', data);
             } catch (error) {
                 console.error('Failed to fetch fees:', error);
-                const feesInfo = document.getElementById('fees-info');
-                if (feesInfo) {
-                    feesInfo.textContent = 'Error';
-                }
+                document.getElementById('fees-info').textContent = 'Error';
             }
         }
 
-        // Add event listeners safely
-        function addEventListeners() {
-            const refreshButton = document.getElementById('refresh-balance');
-            const toggleButton = document.getElementById('toggle-balance');
-            const viewOrdersButton = document.getElementById('view-orders');
-            const viewFeesButton = document.getElementById('view-fees');
-
-            if (refreshButton) {
-                refreshButton.addEventListener('click', fetchBalance);
-            }
-
-            if (toggleButton) {
-                toggleButton.addEventListener('click', toggleBalanceVisibility);
-            }
-
-            if (viewOrdersButton) {
-                viewOrdersButton.addEventListener('click', fetchOrders);
-            }
-
-            if (viewFeesButton) {
-                viewFeesButton.addEventListener('click', fetchFees);
-            }
-        }
+        // Event listeners
+        document.getElementById('refresh-balance').addEventListener('click', fetchBalance);
+        document.getElementById('toggle-balance').addEventListener('click', toggleBalanceVisibility);
+        document.getElementById('view-orders').addEventListener('click', fetchOrders);
+        document.getElementById('view-fees').addEventListener('click', fetchFees);
 
         // Initialize app
         async function init() {
             console.log('🚀 Initializing Binance Wallet App...');
-            
-            // Add event listeners
-            addEventListeners();
-            
-            // Check API status
             await checkApiStatus();
             
             // Auto-refresh connection status every 30 seconds
             setInterval(checkApiStatus, 30000);
         }
+
+        // Start the app
+        init();
     </script>
 </body>
 </html>`;
   
   res.send(html);
 });
+
+// API info endpoint
 app.get('/api/info', (req, res) => {
   res.json({ 
     message: 'Binance Wallet Balance API is running!',
+    version: '1.0.0',
     endpoints: [
       'GET /api/health - Health check',
       'GET /api/wallet/balance - Get wallet balance',
       'GET /api/wallet/orders - Get open orders',
       'GET /api/wallet/fees - Get trading fees'
-    ]
+    ],
+    deployment: 'Railway'
   });
 });
 
@@ -757,17 +708,5 @@ app.listen(PORT, () => {
   console.log(`🔑 API Key configured: ${API_KEY ? 'Yes' : 'No'}`);
   console.log(`🔐 Secret Key configured: ${SECRET_KEY ? 'Yes' : 'No'}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Debug environment variables
-  console.log('🐛 Debug Info:');
-  console.log(`   API Key length: ${process.env.BINANCE_API_KEY ? process.env.BINANCE_API_KEY.length : 0}`);
-  console.log(`   Secret Key length: ${process.env.BINANCE_SECRET_KEY ? process.env.BINANCE_SECRET_KEY.length : 0}`);
-  console.log(`   Available BINANCE env vars: ${Object.keys(process.env).filter(key => key.includes('BINANCE')).join(', ')}`);
-  
-  if (!API_KEY || !SECRET_KEY) {
-    console.log('⚠️  WARNING: Binance API credentials not found!');
-    console.log('   Make sure these environment variables are set:');
-    console.log('   - BINANCE_API_KEY');
-    console.log('   - BINANCE_SECRET_KEY');
-  }
+  console.log(`🚂 Platform: Railway`);
 });
